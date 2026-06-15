@@ -6,8 +6,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
-import spacy
-from spacy.matcher import PhraseMatcher
 
 # ---------- CONFIG ----------
 SKILL_CATEGORIES = {
@@ -32,6 +30,14 @@ for category, skills in SKILL_CATEGORIES.items():
     for skill in skills:
         SKILL_TO_CATEGORY[skill] = category
 
+# Sort longest-first so multi-word phrases (e.g. "machine learning") are
+# matched before shorter substrings, and precompile regex patterns.
+_SKILLS_SORTED = sorted(SKILLS_LIST, key=len, reverse=True)
+_SKILL_PATTERNS = {
+    skill: re.compile(r'(?<![a-zA-Z0-9])' + re.escape(skill).replace(r'\ ', r'[\s\-]+') + r'(?![a-zA-Z0-9])')
+    for skill in _SKILLS_SORTED
+}
+
 
 # ---------- MODEL LOADERS ----------
 @st.cache_resource
@@ -46,18 +52,8 @@ def load_category_model():
     return model, vectorizer
 
 
-@st.cache_resource
-def load_nlp_and_matcher():
-    nlp = spacy.load("en_core_web_sm")
-    matcher = PhraseMatcher(nlp.vocab, attr="LOWER")
-    patterns = [nlp.make_doc(skill) for skill in SKILLS_LIST]
-    matcher.add("SKILLS", patterns)
-    return nlp, matcher
-
-
 embedding_model = load_embedding_model()
 category_model, category_vectorizer = load_category_model()
-nlp, matcher = load_nlp_and_matcher()
 
 
 # ---------- CORE FUNCTIONS ----------
@@ -75,13 +71,12 @@ def extract_text_from_pdf(file):
     return text, page_count, word_count
 
 
-def extract_skills(text, nlp, matcher):
-    doc = nlp(text.lower())
-    matches = matcher(doc)
+def extract_skills(text):
+    text_lower = text.lower()
     found = set()
-    for match_id, start, end in matches:
-        span = doc[start:end]
-        found.add(span.text)
+    for skill, pattern in _SKILL_PATTERNS.items():
+        if pattern.search(text_lower):
+            found.add(skill)
     return found
 
 
@@ -355,8 +350,8 @@ if analyze:
                 resume_text, category_model, category_vectorizer
             )
 
-            resume_skills = extract_skills(resume_text, nlp, matcher)
-            jd_skills = extract_skills(job_description, nlp, matcher)
+            resume_skills = extract_skills(resume_text)
+            jd_skills = extract_skills(job_description)
 
             breakdown = category_breakdown(resume_skills, jd_skills)
             skill_score = calculate_overall_skill_score(breakdown)
